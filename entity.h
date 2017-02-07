@@ -117,6 +117,7 @@ private:
 		uint32_t entity_type_index;
 		uint32_t first;
 		uint32_t size;
+		uint32_t shift;
 	};
 
 	struct Component
@@ -214,6 +215,9 @@ private:
 	{
 		return fn(std::get<Is>(args)[i]...);
 	}
+
+	static uint32_t shift_components_instances_index(Entity_type const& entity_type, Component_range const & range, uint32_t unshifted_index);
+
 private:
 	range<Component_ref*> get_component_ref_range(Entity_type const& etype)
 	{

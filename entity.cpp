@@ -61,6 +61,12 @@ Entity Context::create(Type_id type_id)
 		m_component_refs[entity_type.components_ref_first].component_range_global_index
 	].size;
 
+	// Push an instance to all components this entity has.
+	for (auto& component_ref : get_component_ref_range(entity_type))
+	{
+		++component_push_back(component_ref.component_index, component_ref.component_range_global_index);
+	}
+
 	// Generate a new local index for the new entity.
 	uint32_t entity_index;
 	if (component_instance_index < entity_type.component_to_entity.size())
@@ -79,23 +85,17 @@ Entity Context::create(Type_id type_id)
 		entity_type.generation.push_back(0);
 	}
 
-	// Push an instance to all components this entity has.
-	for (auto& component_ref : get_component_ref_range(entity_type))
-	{
-		++ component_push_back(component_ref.component_index, component_ref.component_range_global_index);
-	}
-
 	return Entity{ (uint16_t)type_id, entity_type.generation[entity_index], entity_index };
 }
 
 void Context::destroy(Entity entity)
 {
-	//assert(is_alive(entity));
+	assert(is_alive(entity));
 
 	auto& entity_type = m_entity_types[entity.type];
 
 	// Map the entity index to the components instances index.
-	uint32_t removed_component_instances_index = entity_type.entity_to_component[entity.index];
+	uint32_t unshifted_removed_component_instances_index = entity_type.entity_to_component[entity.index];
 
 	// Move the last entity in the range in the position of the deleted component.
 	for (auto& component_ref : get_component_ref_range(entity_type))
@@ -103,7 +103,9 @@ void Context::destroy(Entity entity)
 		auto& component = m_components[component_ref.component_index];
 		auto& range = m_component_ranges[component_ref.component_range_global_index];
 
-		char* instance_ptr = component.array + (range.first + removed_component_instances_index) * component.instance_size;
+		const uint32_t shifted_remove_component_instances_index = shift_components_instances_index(entity_type, range, unshifted_removed_component_instances_index);
+
+		char* instance_ptr = component.array + (range.first + shifted_remove_component_instances_index) * component.instance_size;
 		char* back_instance_ptr = component.array + (range.first + --range.size) * component.instance_size;
 
 		memcpy(instance_ptr, back_instance_ptr, component.instance_size);
@@ -118,10 +120,10 @@ void Context::destroy(Entity entity)
 	uint32_t last_component_instance_entity_index = entity_type.component_to_entity[last_component_instance_index];
 
 	// Map the last entity instance to map the the new components instances index (the one being removed).
-	entity_type.entity_to_component[last_component_instance_entity_index] = removed_component_instances_index;
+	entity_type.entity_to_component[last_component_instance_entity_index] = unshifted_removed_component_instances_index;
 
 	// And viceversa.
-	entity_type.component_to_entity[removed_component_instances_index] = last_component_instance_entity_index;
+	entity_type.component_to_entity[unshifted_removed_component_instances_index] = last_component_instance_entity_index;
 
 	// Use the now free component-to-entity slot to map to deleted entity index, effectively marking
 	// it free for reuse.
@@ -148,6 +150,7 @@ void Context::clear()
 	for (auto& range : m_component_ranges)
 	{
 		range.size = 0;
+		range.shift = 0;
 	}
 }
 
@@ -215,11 +218,17 @@ uint32_t& Context::component_push_back(uint32_t component_index, uint32_t compon
 		// If there's no space at the end of this range for one more instance...
 		if (back_index >= next_component_range.first)
 		{
+			assert(back_index == next_component_range.first);
+
 			// Make room for one more at the end of next range.
 			component_push_back(component_index, component_range_global_index + 1);
 			
 			// Move first element to the newly inserted element.
 			memcpy(component.array + (next_component_range.first + next_component_range.size) * component.instance_size, back_ptr, component.instance_size);
+
+			// Adjust entity indices mapping so that entity index mapping to first components
+			// instances index now map the last.
+			++next_component_range.shift;
 
 			// Shift the next range up by one.
 			++next_component_range.first;
@@ -262,7 +271,14 @@ void* Context::get(Entity entity, uint32_t component_id)
 	{
 		auto& component = m_components[it->component_index];
 		auto& range = m_component_ranges[it->component_range_global_index];
-		return component.array + (range.first + entity_type.entity_to_component[entity.index]) * component.instance_size;
+		
+		// Get the index of entity components instances.
+		uint32_t components_instances_index = entity_type.entity_to_component[entity.index];
+
+		// Get the index of entity components instances.
+		components_instances_index = shift_components_instances_index(entity_type, range, components_instances_index);
+
+		return component.array + (range.first + components_instances_index) * component.instance_size;
 	}
 
 	return nullptr;
@@ -324,6 +340,12 @@ uint32_t Context::define_foreach(std::initializer_list<uint32_t> component_ids)
 	
 	m_foreaches.back().foreach_entity_count = m_foreach_entities.size() - m_foreaches.back().foreach_entity_first;
 	return m_foreaches.size() - 1;
+}
+
+uint32_t Context::shift_components_instances_index(Entity_type const& entity_type, Component_range const & range, uint32_t unshifted_index)
+{
+	// Range might have shifted, so adjust index according to range shift.
+	return (range.size + unshifted_index - range.shift % range.size) % range.size;
 }
 
 } // entity
