@@ -3,6 +3,7 @@
 #include "libs.h"
 #include <assert.h>
 #include <stdio.h>
+#include <ctime>
 
 struct Position
 {
@@ -52,11 +53,12 @@ int main()
 	});
 	
 	std::vector<entity::Entity> es;
-	for (int i = 0; i < 100; ++i)
+	srand(time(0));
+	for (int i = 0; i < 1000; ++i)
 	{
 		context.clear();
 		es.clear();
-		for (int j = 0, n = rand() % 100 + 100; j < n; ++j)
+		for (int j = 0, n = rand() % 1000 + 100; j < n; ++j)
 		{
 			switch (rand() % 3)
 			{
@@ -113,7 +115,7 @@ int main()
 			assert(p.y == p.x * 10 + 2);
 			assert(v.y == v.x * 123);
 
-			printf("p (%d %d) v (%d %d)\n", p.x, p.y, v.x, v.y);
+			//printf("p (%d %d) v (%d %d)\n", p.x, p.y, v.x, v.y);
 		});
 	}
 }

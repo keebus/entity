@@ -8,23 +8,26 @@ namespace entity
 
 struct Context::Private
 {
-	// Applies the range component instance range shift to a components instances index, which is
-	// usually calculated from an entity index. The returned instance is the actual index of the
-	// component instance within the component range.
-	static uint32_t shift_component_instance_index(Entity_type const& entity_type, Component_range const & range, uint32_t unshifted_index)
+	static uint32_t get_range_capacity(Context const& ctx, Component const& component, uint32_t component_range_global_index)
 	{
-		return (range.size + unshifted_index - range.shift % range.size) % range.size;
+		if (component_range_global_index + 1 < component.ranges_first + component.ranges_count)
+		{
+			return ctx.m_component_ranges[component_range_global_index + 1].first - ctx.m_component_ranges[component_range_global_index].first;
+		}
+		else
+		{
+			return component.array_capacity;
+		}
 	}
 
 	// Pushes an instance of specified component at the back of its range. After this function
 	// returns, an empty instance is at the end of specified component array. The size of the range
 	// is not effected and a reference to it is returned.
-	static uint32_t& component_push_back(Context& ctx, Component& component, uint32_t component_range_global_index)
+	static void component_push_back(Context& ctx, Component& component, uint32_t component_range_global_index)
 	{
 		auto& component_range = ctx.m_component_ranges[component_range_global_index];
 
-		uint32_t back_index = component_range.first + component_range.size;
-		char* back_ptr = component.array + back_index * component.instance_size;
+		uint32_t back_index = component_range.first + ctx.m_entity_types[component_range.entity_type_index].alive_count;
 
 		if (component_range_global_index + 1 < component.ranges_first + component.ranges_count)
 		{
@@ -41,13 +44,21 @@ struct Context::Private
 				// Make room for one more at the end of next range.
 				component_push_back(ctx, component, component_range_global_index + 1);
 
-				// Move first element to the newly inserted element.
-				memcpy(component.array + (next_component_range.first + next_component_range.size) * component.instance_size, back_ptr, component.instance_size);
+				uint32_t next_component_back_index = next_component_range.first + ctx.m_entity_types[next_component_range.entity_type_index].alive_count;
 
-				// Increase range index shift to take under account the first element being moved to
-				// the end of the range. This shift is applied to component indices to get the actual
-				// physical index of the element in the range.
-				++next_component_range.shift;
+				char* dest_ptr = component.array + next_component_back_index * component.instance_size;
+				char* back_ptr = component.array + back_index * component.instance_size;
+
+				// Move first element to the newly inserted element.
+				memcpy(dest_ptr, back_ptr, component.instance_size);
+
+				// Update logical to physical index mapping.
+				if (ctx.m_entity_types[next_component_range.entity_type_index].alive_count)
+				{
+					uint32_t logical_index = component.physical_to_logical[back_index];
+					next_component_range.logical_to_physical[logical_index] = next_component_back_index;
+					component.physical_to_logical[next_component_back_index] = logical_index;
+				}
 
 				// Shift the next range up by one.
 				++next_component_range.first;
@@ -58,20 +69,16 @@ struct Context::Private
 			// This is the last component range. We shall operate on the instances array itself.
 			if (back_index >= component.array_capacity)
 			{
-				component.array_capacity *= 2;
-
 				// Not enough space. Grow the instance array.
+				component.array_capacity *= 2;
 				component.array = (char*)realloc(component.array, component.array_capacity * component.instance_size);
-
-				// Allocation changed, therefore update the back instance pointer.
-				back_ptr = component.array + back_index * component.instance_size;
+				component.physical_to_logical = (uint32_t*)realloc(component.physical_to_logical, component.array_capacity * sizeof(uint32_t));
 			}
 		}
 
 		// Clear the new component instance memory.
+		char* back_ptr = component.array + back_index * component.instance_size;
 		memset(back_ptr, 0, component.instance_size);
-
-		return component_range.size;
 	}
 
 	static range<Component_ref*> get_component_ref_range(Context& ctx, Entity_type const& etype)
@@ -84,7 +91,10 @@ struct Context::Private
 Context::~Context()
 {
 	for (auto& component : m_components)
+	{
 		free(component.array);
+		free(component.physical_to_logical);
+	}
 }
 
 void Context::setup()
@@ -102,6 +112,7 @@ void Context::setup()
 		// Allocate initial component instances memory.
 		component.array_capacity = 16;
 		component.array = (char*)malloc(component.array_capacity * component.instance_size);
+		component.physical_to_logical = (uint32_t*)malloc(component.array_capacity * sizeof(*component.physical_to_logical));
 	}
 
 	// #todo optimization: sort entity types by the number of components they have, and sort
@@ -131,39 +142,42 @@ Entity Context::create(Entity_type_id type_id)
 {
 	auto& entity_type = m_entity_types[type_id];
 
-	// The (component-local) index of the component about to be pushed.
-	uint32_t component_instance_index = m_component_ranges[
-		m_component_refs[entity_type.components_ref_first].component_range_global_index
-	].size;
-
-	// Push an instance to all components this entity has.
-	for (auto& component_ref : Private::get_component_ref_range(*this, entity_type))
-	{
-		++Private::component_push_back(*this, m_components[component_ref.component_index], component_ref.component_range_global_index);
-	}
-
 	// Generate a new local index for the new entity.
-	uint32_t entity_index;
+	uint32_t logical_index;
 
-	// component_to_entity entries after the last active component instance index contain indices
-	// to free entity indices. See if one is available.
-	if (component_instance_index < entity_type.component_to_entity.size())
+	// #todo
+	if (!entity_type.free_indices.empty())
 	{
-		// This component_to_entity position stores the index to a free entity index.
-		entity_index = entity_type.component_to_entity[component_instance_index];
-		entity_type.entity_to_component[entity_index] = component_instance_index;
+		// #todo
+		logical_index = entity_type.free_indices.front();
+		entity_type.free_indices.pop_front();
 	}
 	else
 	{
-		// No reusable indices. Create a new entity index and map it to the component index.
-		assert(component_instance_index == entity_type.component_to_entity.size());
-		entity_index = component_instance_index;
-		entity_type.entity_to_component.push_back(component_instance_index);
-		entity_type.component_to_entity.push_back(entity_index);
+		// No reusable indices. Create a new logical index and map it to the component index.
+		logical_index = entity_type.alive_count;
+		for (auto& component_ref : Private::get_component_ref_range(*this, entity_type))
+		{
+			m_component_ranges[component_ref.component_range_global_index].logical_to_physical.emplace_back();
+		}
 		entity_type.generation.push_back(0);
 	}
 
-	return Entity{ (uint16_t)type_id, entity_type.generation[entity_index], entity_index };
+	for (auto& component_ref : Private::get_component_ref_range(*this, entity_type))
+	{
+		auto& component = m_components[component_ref.component_index];
+		auto& range = m_component_ranges[component_ref.component_range_global_index];
+
+		Private::component_push_back(*this, component, component_ref.component_range_global_index);
+
+		uint32_t physical_index = range.first + entity_type.alive_count;
+		range.logical_to_physical[logical_index] = physical_index;
+		component.physical_to_logical[physical_index] = logical_index;
+	}
+
+	++entity_type.alive_count;
+
+	return Entity{ (uint16_t)type_id, entity_type.generation[logical_index], logical_index };
 }
 
 void Context::destroy(Entity entity)
@@ -175,11 +189,14 @@ void Context::destroy(Entity entity)
 	// terribly expensive as we don't need to update all existing entities but only one.
 
 	assert(is_alive(entity));
-
 	auto& entity_type = m_entity_types[entity.type];
+	
+	entity_type.free_indices.push_back(entity.index);
 
-	// Map the entity index to the components instances index.
-	uint32_t unshifted_removed_components_instance_index = entity_type.entity_to_component[entity.index];
+	// Increment generation count so that all entity ids like `entity` are now not alive.
+	++entity_type.generation[entity.index];
+
+	--entity_type.alive_count;
 
 	// Move the last entity in the range in the position of the deleted component.
 	for (auto& component_ref : Private::get_component_ref_range(*this, entity_type))
@@ -187,36 +204,19 @@ void Context::destroy(Entity entity)
 		auto& component = m_components[component_ref.component_index];
 		auto& range = m_component_ranges[component_ref.component_range_global_index];
 
-		const uint32_t shifted_remove_component_instance_index = Private::shift_component_instance_index(entity_type, range, unshifted_removed_components_instance_index);
+		const uint32_t destroyed_physical_index = range.logical_to_physical[entity.index];
+		const uint32_t back_physical_index = range.first + entity_type.alive_count;
 
-		--range.size;
+		char* destroyed_instance_ptr = component.array + destroyed_physical_index * component.instance_size;
+		char* back_instance_ptr = component.array + back_physical_index * component.instance_size;
 
-		char* instance_ptr = component.array + (range.first + shifted_remove_component_instance_index) * component.instance_size;
-		char* back_instance_ptr = component.array + (range.first + range.size) * component.instance_size;
+		memcpy(destroyed_instance_ptr, back_instance_ptr, component.instance_size);
 
-		memcpy(instance_ptr, back_instance_ptr, component.instance_size);
+		// #todo
+		uint32_t back_logical_index = component.physical_to_logical[back_physical_index];
+		component.physical_to_logical[destroyed_physical_index] = back_logical_index;
+		range.logical_to_physical[back_logical_index] = destroyed_physical_index;
 	}
-	
-	// Number of active entities is the number of component instances.
-	uint32_t last_component_instance_index = m_component_ranges[
-		m_component_refs[entity_type.components_ref_first].component_range_global_index
-	].size;
-
-	// Map the last components instances index (equal the instances count) to its entity index.
-	uint32_t last_component_instance_entity_index = entity_type.component_to_entity[last_component_instance_index];
-
-	// Map the last entity instance to map the the new components instances index (the one being removed).
-	entity_type.entity_to_component[last_component_instance_entity_index] = unshifted_removed_components_instance_index;
-
-	// And viceversa.
-	entity_type.component_to_entity[unshifted_removed_components_instance_index] = last_component_instance_entity_index;
-
-	// Use the now free component-to-entity slot to map to deleted entity index, effectively marking
-	// it free for reuse.
-	entity_type.component_to_entity[last_component_instance_index] = entity.index;
-
-	// Increment generation count so that all entity ids like `entity` are now not alive.
-	++entity_type.generation[entity.index];
 }
 
 void Context::clear()
@@ -224,19 +224,24 @@ void Context::clear()
 	// Reset all entity lists.
 	for (auto& entity_type : m_entity_types)
 	{
+#ifdef _DEBUG
+		for (auto& component_ref : Private::get_component_ref_range(*this, entity_type))
+		{
+			auto& component = m_components[component_ref.component_index];
+			auto& range = m_component_ranges[component_ref.component_range_global_index];
+			assert(range.logical_to_physical.size() == entity_type.generation.size());
+		}
+#endif
+
+		entity_type.alive_count = 0;
+
 		// Make all entity indices free.
+		entity_type.free_indices.clear();
 		for (uint32_t i = 0; i < entity_type.generation.size(); ++i)
 		{
-			entity_type.component_to_entity[i] = i;
+			entity_type.free_indices.push_back(i);
 			++entity_type.generation[i];
 		}
-	}
-
-	// Clear all ranges of components instances.
-	for (auto& range : m_component_ranges)
-	{
-		range.size = 0;
-		range.shift = 0;
 	}
 }
 
@@ -309,9 +314,9 @@ void* Context::get_component_instance(Entity entity, uint32_t component_id)
 		auto& range = m_component_ranges[it->component_range_global_index];
 		
 		// Get the physical index of the entity component instance within the component range.
-		const uint32_t component_instance_index = Private::shift_component_instance_index(entity_type, range, entity_type.entity_to_component[entity.index]);
+		const uint32_t physical_index = range.logical_to_physical[entity.index];
 
-		return component.array + (range.first + component_instance_index) * component.instance_size;
+		return component.array + physical_index * component.instance_size;
 	}
 
 	return nullptr;

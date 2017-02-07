@@ -6,6 +6,7 @@
 #include <vector>
 #include <array>
 #include <assert.h>
+#include <deque>
 
 #pragma warning(disable: 4200)
 
@@ -132,13 +133,12 @@ public:
 		for (uint32_t i = foreach.foreach_stmt_first, ei = foreach.foreach_stmt_first + foreach.foreach_stmt_count; i < ei; ++i)
 		{
 			auto& foreach_stmt = m_foreach_stmts[i];
-			assert(sizeof...(Components) == foreach_stmt.component_ref_index_count);
-
 			auto& entity_type = m_entity_types[foreach_stmt.entity_type_index];
+			assert(sizeof...(Components) == foreach_stmt.component_ref_index_count);
 	
-			uint32_t count = unwrap_component_arrays<0, decltype(component_arrays), Components...>(component_arrays, entity_type.components_ref_first, foreach_stmt.component_ref_index_first);
+			unwrap_component_arrays<0, decltype(component_arrays), Components...>(component_arrays, entity_type.components_ref_first, foreach_stmt.component_ref_index_first);
 			
-			for (uint32_t j = 0; j < count; ++j)
+			for (uint32_t j = 0; j < entity_type.alive_count; ++j)
 			{
 				invoke_foreach_fn(std::forward<Fn>(fn), component_arrays, j, mp::build_indices<sizeof...(Components)>{});
 			}
@@ -158,15 +158,10 @@ private:
 
 		// Index of the first component in the component array.
 		uint32_t first;
-
-		// Extent of the range of components. This also means the actual number of live entities of
-		// this type.
-		uint32_t size;
-
-		// Left-shifting applied to component instance indices to get the actual physical index of
-		// the component in the array. This is necessary for efficient range growth removing the need
-		// to update all entity-to-component-index mappings.
-		uint32_t shift;
+		
+		// Mapping of entity index to component index in component ranges associated to this entity
+		// type before range shifting.
+		std::vector<uint32_t> logical_to_physical;
 	};
 
 	// Wraps info about a component type.
@@ -184,6 +179,9 @@ private:
 		// Number of ranges associated to this component. This also means number of entities that
 		// have this component.
 		uint32_t ranges_count;
+
+		// #todo
+		uint32_t* physical_to_logical;
 
 		// Capacity (number of instances) the array allocation can hold.
 		uint32_t array_capacity;
@@ -213,17 +211,15 @@ private:
 
 		// Number of components this entity has.
 		uint32_t components_ref_count;
+		
+		// Number of live entities of this type; also the span of each Component_range.
+		uint32_t alive_count;
 
 		// Array of generation counters per entity index, used to track entity lifetime.
 		std::vector<uint16_t> generation;
-
-		// Mapping of entity index to component index in component ranges associated to this entity
-		// type before range shifting.
-		std::vector<uint32_t> entity_to_component;
-
-		// Mapping of unshifted component index in ranges associated to this entity to the entity
-		// index they belong to.
-		std::vector<uint32_t> component_to_entity;
+		
+		// #todo
+		std::deque<uint32_t> free_indices;
 	}; 
 
 	// Wraps info about a foreach instances.
@@ -294,7 +290,7 @@ private:
 	
 	// Helper function that sets the typed component arrays into specified tuple [arrays].
 	template <int I, typename Tuple, typename T, typename... Ts>
-	uint32_t unwrap_component_arrays(Tuple& arrays, uint32_t component_ref_first, uint32_t component_ref_index_first)
+	void unwrap_component_arrays(Tuple& arrays, uint32_t component_ref_first, uint32_t component_ref_index_first)
 	{
 		auto& component_ref = m_component_refs[component_ref_first + m_ids[component_ref_index_first + I]];
 		auto& component = m_components[component_ref.component_index];
@@ -303,8 +299,6 @@ private:
 		std::get<I>(arrays) = reinterpret_cast<T*>(component.array + range.first * component.instance_size);
 		
 		unwrap_component_arrays<I + 1, Tuple, Ts...>(arrays, component_ref_first, component_ref_index_first);
-		
-		return range.size;
 	}
 
 	// Base case.
