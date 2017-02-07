@@ -116,7 +116,7 @@ public:
 	// Retrieves the specified `Component` from given [entity]. If entity does not specify the
 	// content, nullptr is returned instead.
 	template <typename Component>
-	Component* get_component_instance(Entity entity)
+	Component* get(Entity entity)
 	{
 		return static_cast<Component*>(get_component_instance(entity, mp::type_id<Component>::value));
 	}

@@ -43,7 +43,7 @@ int main()
 	{
 		auto p = context.create( entity_position);
 		context.create(entity_velocity);
-		*context.get_component_instance<Position>(p) = { i, i * 10 + 2 };
+		*context.get<Position>(p) = { i, i * 10 + 2 };
 	}
 
 	foreach_position(context, [&](Position& p)
@@ -61,12 +61,20 @@ int main()
 			switch (rand() % 3)
 			{
 				case 0: es.push_back(context.create(entity_position)); goto set_position;
-				case 1: es.push_back(context.create(entity_position_velocity)); goto set_position;
-				case 2: es.push_back(context.create(entity_velocity)); break;
+				case 1:
+					es.push_back(context.create(entity_position_velocity));
+					*context.get<Velocity>(es.back()) = { (int)es.size(), (int)es.size() * 2};
+					goto set_position;
+
+				case 2:
+					es.push_back(context.create(entity_velocity));
+					*context.get<Velocity>(es.back()) = { (int)es.size(), (int)es.size() * 2};
+					break;
+
 				set_position:
 				{
 					int r = rand() % 1234;
-					auto p = context.get_component_instance<Position>(es.back());
+					auto p = context.get<Position>(es.back());
 					*p = { r, r * 10 + 2 };
 					r = 0;
 					break;

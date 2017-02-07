@@ -44,8 +44,9 @@ struct Context::Private
 				// Move first element to the newly inserted element.
 				memcpy(component.array + (next_component_range.first + next_component_range.size) * component.instance_size, back_ptr, component.instance_size);
 
-				// Adjust entity indices mapping so that entity index mapping to first components
-				// instances index now map the last.
+				// Increase range index shift to take under account the first element being moved to
+				// the end of the range. This shift is applied to component indices to get the actual
+				// physical index of the element in the range.
 				++next_component_range.shift;
 
 				// Shift the next range up by one.
@@ -143,6 +144,9 @@ Entity Context::create(Entity_type_id type_id)
 
 	// Generate a new local index for the new entity.
 	uint32_t entity_index;
+
+	// component_to_entity entries after the last active component instance index contain indices
+	// to free entity indices. See if one is available.
 	if (component_instance_index < entity_type.component_to_entity.size())
 	{
 		// This component_to_entity position stores the index to a free entity index.
@@ -164,6 +168,12 @@ Entity Context::create(Entity_type_id type_id)
 
 void Context::destroy(Entity entity)
 {
+	// Entity destruction involves two steps: moving the last instance of each entity component range
+	// into delete component location reducing by one the range of components and updating the
+	// mapping between entity indices and component indices to affect this change. By adding a level
+	// of indirection between entity index and component index we effectively make deletion not
+	// terribly expensive as we don't need to update all existing entities but only one.
+
 	assert(is_alive(entity));
 
 	auto& entity_type = m_entity_types[entity.type];
@@ -179,8 +189,10 @@ void Context::destroy(Entity entity)
 
 		const uint32_t shifted_remove_component_instance_index = Private::shift_component_instance_index(entity_type, range, unshifted_removed_components_instance_index);
 
+		--range.size;
+
 		char* instance_ptr = component.array + (range.first + shifted_remove_component_instance_index) * component.instance_size;
-		char* back_instance_ptr = component.array + (range.first + --range.size) * component.instance_size;
+		char* back_instance_ptr = component.array + (range.first + range.size) * component.instance_size;
 
 		memcpy(instance_ptr, back_instance_ptr, component.instance_size);
 	}
