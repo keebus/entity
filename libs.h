@@ -58,7 +58,7 @@ range<T*> make_range(T* array, size_t size)
 }
 
 template <typename T, size_t N>
-range<T const*> make_range(std::array<T, N> const& array)
+range<T*> make_range(std::array<T, N>& array)
 {
 	return { array.data(), array.data() + N };
 }

@@ -43,7 +43,7 @@ int main()
 	{
 		auto p = context.create( entity_position);
 		context.create(entity_velocity);
-		*context.get<Position>(p) = { i, i * 10 + 2 };
+		*context.get_component_instance<Position>(p) = { i, i * 10 + 2 };
 	}
 
 	foreach_position(context, [&](Position& p)
@@ -66,7 +66,7 @@ int main()
 				set_position:
 				{
 					int r = rand() % 1234;
-					auto p = context.get<Position>(es.back());
+					auto p = context.get_component_instance<Position>(es.back());
 					*p = { r, r * 10 + 2 };
 					r = 0;
 					break;
