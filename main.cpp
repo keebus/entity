@@ -20,9 +20,9 @@ int main()
 {
 	entity::Context context;
 
-	entity::Type_id entity_position = context.define<Position>();
-	entity::Type_id entity_position_velocity = context.define<Position, Velocity>();
-	entity::Type_id entity_velocity = context.define<Velocity>();
+	entity::Entity_type_id entity_position = context.define<Position>();
+	entity::Entity_type_id entity_position_velocity = context.define<Position, Velocity>();
+	entity::Entity_type_id entity_velocity = context.define<Velocity>();
 
 	assert((context.define<Velocity>() == entity_velocity));
 	assert((context.define<Position>() == entity_position));
