@@ -51,6 +51,11 @@ int main()
 	{
 		assert(p.y == p.x * 10 + 2);
 	});
+
+	foreach_position(context, [](entity::Foreach_control& control, Position& p)
+	{
+		
+	});
 	
 	std::vector<entity::Entity> es;
 	srand(time(0));

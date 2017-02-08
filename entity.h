@@ -59,6 +59,22 @@ private:
 	uint32_t m_index;
 };
 
+namespace foreach_control_flags
+{
+	enum Enum
+	{
+		Default = 0,
+		Entity_created = 1,
+		Remove_current_entity = 2,
+	};
+} // namespace foreach_control_flags
+
+struct Foreach_control
+{
+	Entity entity;
+	foreach_control_flags::Enum flags;
+};
+
 // A context manages all entity operations. Start by defining entity types, i.e. the various possible
 // sets of components that make up the entities in your application. You can only create entities out
 // of a previously defined entity type. Entities created out of an entity type will be mapped to an
@@ -126,13 +142,13 @@ public:
 	// belonging to a live entity. The function is expected to take a non-const reference to
 	// all Components and return void.
 	template <typename Fn, typename... Components>
-	void foreach(entity::Foreach<Components...> foreach_, Fn fn)
+	auto foreach(entity::Foreach<Components...> foreach_, Fn fn) ->
+		std::enable_if_t<std::is_void<decltype(fn(std::declval<Components>()...))>::value>
 	{
 		auto& foreach = m_foreaches[foreach_.m_index];
 		std::tuple<Components*...> component_arrays;
-		for (uint32_t i = foreach.foreach_stmt_first, ei = foreach.foreach_stmt_first + foreach.foreach_stmt_count; i < ei; ++i)
+		for (auto& foreach_stmt : make_range(m_foreach_stmts.data() + foreach.foreach_stmt_first, foreach.foreach_stmt_count))
 		{
-			auto& foreach_stmt = m_foreach_stmts[i];
 			auto& entity_type = m_entity_types[foreach_stmt.entity_type_index];
 			assert(sizeof...(Components) == foreach_stmt.component_ref_index_count);
 	
@@ -141,6 +157,44 @@ public:
 			for (uint32_t j = 0; j < entity_type.alive_count; ++j)
 			{
 				invoke_foreach_fn(std::forward<Fn>(fn), component_arrays, j, mp::build_indices<sizeof...(Components)>{});
+			}
+		}
+	}
+
+	template <typename Fn, typename... Components>
+	auto foreach(entity::Foreach<Components...> foreach_, Fn fn) ->
+		std::enable_if_t<std::is_void<decltype(fn(std::declval<Foreach_control&>(), std::declval<Components>()...))>::value>
+	{
+		auto& foreach = m_foreaches[foreach_.m_index];
+		std::tuple<Components*...> component_arrays;
+		for (auto& foreach_stmt : make_range(m_foreach_stmts.data() + foreach.foreach_stmt_first, foreach.foreach_stmt_count))
+		{
+			auto& entity_type = m_entity_types[foreach_stmt.entity_type_index];
+			assert(sizeof...(Components) == foreach_stmt.component_ref_index_count);
+	
+			unwrap_component_arrays<0, decltype(component_arrays), Components...>(component_arrays, entity_type.components_range_first, foreach_stmt.component_ref_index_first);
+			
+			for (uint32_t i = 0, n = entity_type.alive_count; i < n; ++i)
+			{
+				Foreach_control control;
+				control.entity = { (uint16_t)foreach_stmt.entity_type_index, 0, 0 };
+				control.flags = foreach_control_flags::Default;
+
+				invoke_foreach_fn(std::forward<Fn>(fn), control, component_arrays, i, mp::build_indices<sizeof...(Components)>{});
+
+				if (control.flags & foreach_control_flags::Remove_current_entity)
+				{
+					destroy(control.entity);
+					n = entity_type.alive_count;
+				}
+				else if (control.flags & foreach_control_flags::Entity_created)
+				{
+					unwrap_component_arrays<0, decltype(component_arrays), Components...>(component_arrays, entity_type.components_range_first, foreach_stmt.component_ref_index_first);
+				}
+				else
+				{
+					++i;
+				}
 			}
 		}
 	}
@@ -301,6 +355,14 @@ private:
 	static void invoke_foreach_fn(Fn fn, Tuple const& args, uint32_t i, mp::indices<Is...>)
 	{
 		return fn(std::get<Is>(args)[i]...);
+	}
+
+	// Helper function that invokes a foreach function from specified component arrays [args] and
+	// iteration index [i].
+	template <typename Fn, typename Tuple, size_t... Is>
+	static void invoke_foreach_fn(Fn fn, Foreach_control& control, Tuple const& args, uint32_t i, mp::indices<Is...>)
+	{
+		return fn(control, std::get<Is>(args)[i]...);
 	}
 
 	// Structure that contains helper functions defined in the cpp.
