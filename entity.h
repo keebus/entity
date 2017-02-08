@@ -136,7 +136,7 @@ public:
 			auto& entity_type = m_entity_types[foreach_stmt.entity_type_index];
 			assert(sizeof...(Components) == foreach_stmt.component_ref_index_count);
 	
-			unwrap_component_arrays<0, decltype(component_arrays), Components...>(component_arrays, entity_type.components_ref_first, foreach_stmt.component_ref_index_first);
+			unwrap_component_arrays<0, decltype(component_arrays), Components...>(component_arrays, entity_type.components_range_first, foreach_stmt.component_ref_index_first);
 			
 			for (uint32_t j = 0; j < entity_type.alive_count; ++j)
 			{
@@ -149,10 +149,12 @@ private:
 	// Identifies a range of components in the component array.
 	struct Component_range
 	{
-#ifdef _DEBUG
+		// Component index, used for debugging.
+		uint32_t component_id;
+
 		// Component index, used for debugging.
 		uint32_t component_index;
-#endif
+		
 		// Index of the entity type this range belongs to.
 		uint32_t entity_type_index;
 
@@ -189,28 +191,15 @@ private:
 		// Array of component instances.
 		char*    array;
 	};
-
-	// Entity type reference to a component type.
-	struct Component_ref
-	{
-		// Id of the component.
-		uintptr_t component_id;
-
-		// Index of the component in `m_components`.
-		uint16_t component_index;
-
-		// Index in `m_component_ranges` of the range of instances belonging to this entity type.
-		uint16_t component_range_global_index;
-	};
 	
 	// Wraps info about an entity type (collection of components).
 	struct Entity_type
 	{
 		// Index of the first component ref in `m_component_refs` this entity has.
-		uint32_t components_ref_first;
+		uint32_t components_range_first;
 
 		// Number of components this entity has.
-		uint32_t components_ref_count;
+		uint32_t components_count;
 		
 		// Number of live entities of this type; also the span of each Component_range.
 		uint32_t alive_count;
@@ -290,15 +279,14 @@ private:
 	
 	// Helper function that sets the typed component arrays into specified tuple [arrays].
 	template <int I, typename Tuple, typename T, typename... Ts>
-	void unwrap_component_arrays(Tuple& arrays, uint32_t component_ref_first, uint32_t component_ref_index_first)
+	void unwrap_component_arrays(Tuple& arrays, uint32_t component_range_first, uint32_t component_ref_index_first)
 	{
-		auto& component_ref = m_component_refs[component_ref_first + m_ids[component_ref_index_first + I]];
-		auto& component = m_components[component_ref.component_index];
-		auto& range = m_component_ranges[component_ref.component_range_global_index];
+		auto& component_range = m_component_ranges[component_range_first + m_ids[component_ref_index_first + I]];
+		auto& component = m_components[component_range.component_index];
 		
-		std::get<I>(arrays) = reinterpret_cast<T*>(component.array + range.first * component.instance_size);
+		std::get<I>(arrays) = reinterpret_cast<T*>(component.array + component_range.first * component.instance_size);
 		
-		unwrap_component_arrays<I + 1, Tuple, Ts...>(arrays, component_ref_first, component_ref_index_first);
+		unwrap_component_arrays<I + 1, Tuple, Ts...>(arrays, component_range_first, component_ref_index_first);
 	}
 
 	// Base case.
@@ -330,9 +318,6 @@ private:
 
 	// Array of defined entity types.
 	std::vector<Entity_type> m_entity_types;
-
-	// Array of component references from entity types.
-	std::vector<Component_ref> m_component_refs;
 
 	// Array of foreach instances.
 	std::vector<Foreach> m_foreaches;

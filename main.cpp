@@ -115,7 +115,7 @@ int main()
 			assert(p.y == p.x * 10 + 2);
 			assert(v.y == v.x * 123);
 
-			//printf("p (%d %d) v (%d %d)\n", p.x, p.y, v.x, v.y);
+			printf("p (%d %d) v (%d %d)\n", p.x, p.y, v.x, v.y);
 		});
 	}
 }
