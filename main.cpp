@@ -43,7 +43,6 @@ int main()
 	for (int i = 0; i < 88; ++i)
 	{
 		auto p = context.create( entity_position);
-		context.create(entity_velocity);
 		*context.get<Position>(p) = { i, i * 10 + 2 };
 	}
 
@@ -52,11 +51,24 @@ int main()
 		assert(p.y == p.x * 10 + 2);
 	});
 
-	foreach_position(context, [](entity::Foreach_control& control, Position& p)
+	foreach_position(context, [&](entity::Foreach_control& control, Position& p)
 	{
-		
+		assert(p.y == p.x * 10 + 2);
+		context.destroy(control.entity());
+		control.set_flag(entity::Foreach_control::Entity_removed);
 	});
 	
+	for (int i = 0; i < 88; ++i)
+	{
+		auto p = context.create(entity_position);
+		*context.get<Position>(p) = { i, i * 10 + 2 };
+	}
+
+	foreach_position(context, [&](Position& p)
+	{
+		assert(p.y == p.x * 10 + 2);
+	});
+
 	std::vector<entity::Entity> es;
 	srand(time(0));
 	for (int i = 0; i < 1000; ++i)

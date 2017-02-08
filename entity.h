@@ -59,20 +59,34 @@ private:
 	uint32_t m_index;
 };
 
-namespace foreach_control_flags
+// Lightweight class optionally used in entity components foreach iterations to fetch additional
+// information about the current entity (e.g. the id) and to instruct the context that changes have
+// been made, e.g. an entity was created or destroyed.
+class Foreach_control
 {
-	enum Enum
+public:
+	enum Flags
 	{
-		Default = 0,
+		// Tells the context that some entity was created.
 		Entity_created = 1,
-		Remove_current_entity = 2,
-	};
-} // namespace foreach_control_flags
 
-struct Foreach_control
-{
-	Entity entity;
-	foreach_control_flags::Enum flags;
+		// Tells the context that some entity was destroyed.
+		Entity_removed = 2,
+	};
+
+	// Returns the current iteration entity id.
+	Entity entity() const {return m_entity; }
+
+	// Sets a [flag].
+	void set_flag(Flags flag) { m_flags |= flag; }
+
+	// Returns whether [flag] is enabled.
+	bool is_flag_set(Flags flag) { return (m_flags & flag) == flag; }
+
+private:
+	friend Context;
+	Entity m_entity;
+	uint32_t m_flags;
 };
 
 // A context manages all entity operations. Start by defining entity types, i.e. the various possible
@@ -154,46 +168,49 @@ public:
 	
 			unwrap_component_arrays<0, decltype(component_arrays), Components...>(component_arrays, entity_type.components_range_first, foreach_stmt.component_ref_index_first);
 			
-			for (uint32_t j = 0; j < entity_type.alive_count; ++j)
+			for (uint32_t j = 0, n = entity_type.alive_count; j < n; ++j)
 			{
 				invoke_foreach_fn(std::forward<Fn>(fn), component_arrays, j, mp::build_indices<sizeof...(Components)>{});
 			}
 		}
 	}
 
+	// Executes provided function [fn] over all instances of Components... in the context [ctx]
+	// belonging to a live entity. The function is expected to take a non-const reference to
+	// Foreach_control followed by all Components and return void.
+	// The user should use this version when new entities are created/destroyed during iteration.
 	template <typename Fn, typename... Components>
 	auto foreach(entity::Foreach<Components...> foreach_, Fn fn) ->
 		std::enable_if_t<std::is_void<decltype(fn(std::declval<Foreach_control&>(), std::declval<Components>()...))>::value>
 	{
 		auto& foreach = m_foreaches[foreach_.m_index];
 		std::tuple<Components*...> component_arrays;
+		Foreach_control control;
 		for (auto& foreach_stmt : make_range(m_foreach_stmts.data() + foreach.foreach_stmt_first, foreach.foreach_stmt_count))
 		{
 			auto& entity_type = m_entity_types[foreach_stmt.entity_type_index];
 			assert(sizeof...(Components) == foreach_stmt.component_ref_index_count);
 	
 			unwrap_component_arrays<0, decltype(component_arrays), Components...>(component_arrays, entity_type.components_range_first, foreach_stmt.component_ref_index_first);
-			
-			for (uint32_t i = 0, n = entity_type.alive_count; i < n; ++i)
+
+			auto& first_component_range = m_component_ranges[entity_type.components_range_first];
+			auto& physical_to_logical = m_components[first_component_range.component_index].physical_to_logical;
+
+			for (uint32_t i = 0; i < entity_type.alive_count; ++i)
 			{
-				Foreach_control control;
-				control.entity = { (uint16_t)foreach_stmt.entity_type_index, 0, 0 };
-				control.flags = foreach_control_flags::Default;
+				uint32_t logical_index = physical_to_logical[first_component_range.first_physical_index + i];
+				control.m_entity = { foreach_stmt.entity_type_index, entity_type.generation[logical_index], logical_index };
+				control.m_flags = 0;
 
 				invoke_foreach_fn(std::forward<Fn>(fn), control, component_arrays, i, mp::build_indices<sizeof...(Components)>{});
 
-				if (control.flags & foreach_control_flags::Remove_current_entity)
-				{
-					destroy(control.entity);
-					n = entity_type.alive_count;
-				}
-				else if (control.flags & foreach_control_flags::Entity_created)
+				if (control.is_flag_set(Foreach_control::Entity_created))
 				{
 					unwrap_component_arrays<0, decltype(component_arrays), Components...>(component_arrays, entity_type.components_range_first, foreach_stmt.component_ref_index_first);
 				}
-				else
+				else if (control.is_flag_set(Foreach_control::Entity_removed) && !is_alive(control.m_entity))
 				{
-					++i;
+					--i;
 				}
 			}
 		}
@@ -210,10 +227,10 @@ private:
 		uint32_t component_index;
 		
 		// Index of the entity type this range belongs to.
-		uint32_t entity_type_index;
+		Entity_type_id entity_type_index;
 
 		// Index of the first component in the component array.
-		uint32_t first;
+		uint32_t first_physical_index;
 		
 		// Mapping of entity index to component index in component ranges associated to this entity
 		// type before range shifting.
@@ -285,7 +302,7 @@ private:
 	struct Foreach_stmt
 	{
 		// Index in `m_entity_types` of entity type it stmt iterates over.
-		uint32_t entity_type_index;
+		Entity_type_id  entity_type_index;
 		
 		// Index in `m_ids` of the first index in this stmt entity type component refs.
 		uint32_t component_ref_index_first;
@@ -338,7 +355,7 @@ private:
 		auto& component_range = m_component_ranges[component_range_first + m_ids[component_ref_index_first + I]];
 		auto& component = m_components[component_range.component_index];
 		
-		std::get<I>(arrays) = reinterpret_cast<T*>(component.array + component_range.first * component.instance_size);
+		std::get<I>(arrays) = reinterpret_cast<T*>(component.array + component_range.first_physical_index * component.instance_size);
 		
 		unwrap_component_arrays<I + 1, Tuple, Ts...>(arrays, component_range_first, component_ref_index_first);
 	}
@@ -369,6 +386,8 @@ private:
 	struct Private;
 
 private:
+	friend Foreach_control;
+
 	// Array of indices, used to index heterogeneous arrays.
 	std::vector<uintptr_t> m_ids;
 

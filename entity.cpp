@@ -12,7 +12,7 @@ struct Context::Private
 	{
 		if (component_range_global_index + 1 < component.ranges_first + component.ranges_count)
 		{
-			return ctx.m_component_ranges[component_range_global_index + 1].first - ctx.m_component_ranges[component_range_global_index].first;
+			return ctx.m_component_ranges[component_range_global_index + 1].first_physical_index - ctx.m_component_ranges[component_range_global_index].first_physical_index;
 		}
 		else
 		{
@@ -27,7 +27,7 @@ struct Context::Private
 	{
 		auto& component_range = ctx.m_component_ranges[component_range_global_index];
 
-		uint32_t back_index = component_range.first + ctx.m_entity_types[component_range.entity_type_index].alive_count;
+		uint32_t back_index = component_range.first_physical_index + ctx.m_entity_types[component_range.entity_type_index].alive_count;
 
 		if (component_range_global_index + 1 < component.ranges_first + component.ranges_count)
 		{
@@ -37,14 +37,14 @@ struct Context::Private
 			auto& next_component_range = ctx.m_component_ranges[component_range_global_index + 1];
 
 			// If there's no space at the end of this range for one more instance...
-			if (back_index >= next_component_range.first)
+			if (back_index >= next_component_range.first_physical_index)
 			{
-				assert(back_index == next_component_range.first);
+				assert(back_index == next_component_range.first_physical_index);
 
 				// Make room for one more at the end of next range.
 				component_push_back(ctx, component, component_range_global_index + 1);
 
-				uint32_t next_component_back_index = next_component_range.first + ctx.m_entity_types[next_component_range.entity_type_index].alive_count;
+				uint32_t next_component_back_index = next_component_range.first_physical_index + ctx.m_entity_types[next_component_range.entity_type_index].alive_count;
 
 				char* dest_ptr = component.array + next_component_back_index * component.instance_size;
 				char* back_ptr = component.array + back_index * component.instance_size;
@@ -61,7 +61,7 @@ struct Context::Private
 				}
 
 				// Shift the next range up by one.
-				++next_component_range.first;
+				++next_component_range.first_physical_index;
 			}
 		}
 		else
@@ -154,7 +154,7 @@ Entity Context::create(Entity_type_id type_id)
 
 		Private::component_push_back(*this, component, &component_range - m_component_ranges.data());
 
-		uint32_t physical_index = component_range.first + entity_type.alive_count;
+		uint32_t physical_index = component_range.first_physical_index + entity_type.alive_count;
 		component_range.logical_to_physical[logical_index] = physical_index;
 		component.physical_to_logical[physical_index] = logical_index;
 	}
@@ -188,7 +188,7 @@ void Context::destroy(Entity entity)
 		auto& component = m_components[component_range.component_index];
 
 		const uint32_t destroyed_physical_index = component_range.logical_to_physical[entity.index];
-		const uint32_t back_physical_index = component_range.first + entity_type.alive_count;
+		const uint32_t back_physical_index = component_range.first_physical_index + entity_type.alive_count;
 
 		char* destroyed_instance_ptr = component.array + destroyed_physical_index * component.instance_size;
 		char* back_instance_ptr = component.array + back_physical_index * component.instance_size;
@@ -269,7 +269,7 @@ Context::Entity_type* Context::find_create_entity_type(range<uintptr_t*> compone
 		
 	for (auto component_id : component_ids)
 	{
-		m_component_ranges.push_back({ component_id, 0, m_entity_types.size() });
+		m_component_ranges.push_back({ component_id, 0, (uint16_t)m_entity_types.size() });
 		++find_component(component_id)->ranges_count;
 	}
 
@@ -358,7 +358,7 @@ uint32_t Context::define_foreach(std::initializer_list<uint32_t> component_ids)
 		// If all components have been mached, create the foreach statements otherwise undo any
 		// change made.
 		if (num_components == component_ref_index_count)
-			m_foreach_stmts.push_back({ (uint32_t)(&entity_type - m_entity_types.data()), component_ref_index_first, component_ref_index_count });
+			m_foreach_stmts.push_back({ (Entity_type_id)(&entity_type - m_entity_types.data()), component_ref_index_first, component_ref_index_count });
 		else
 			m_ids.resize(component_ref_index_first);
 	}
