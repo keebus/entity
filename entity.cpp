@@ -3,8 +3,7 @@
 #include <assert.h>
 #include <algorithm>
 
-namespace entity
-{
+namespace entity {
 
 struct Context::Private
 {
@@ -23,7 +22,7 @@ struct Context::Private
 	// Pushes an instance of specified component at the back of its range. After this function
 	// returns, an empty instance is at the end of specified component array. The size of the range
 	// is not effected and a reference to it is returned.
-	static void component_push_back(Context& ctx, Component& component, uint32_t component_range_global_index)
+	static void* component_push_back(Context& ctx, Component& component, uint32_t component_range_global_index)
 	{
 		auto& component_range = ctx.m_component_ranges[component_range_global_index];
 
@@ -77,13 +76,12 @@ struct Context::Private
 		}
 
 		// Clear the new component instance memory.
-		char* back_ptr = component.array + back_index * component.instance_size;
-		memset(back_ptr, 0, component.instance_size);
+		return component.array + back_index * component.instance_size;
 	}
 
-	static range<Component_range*> get_component_ranges(Context& ctx, Entity_type const& etype)
+	static range<Component_ref*> get_component_refs(Context& ctx, Entity_type const& etype)
 	{
-		auto begin = ctx.m_component_ranges.data() + etype.components_range_first;
+		auto begin = ctx.m_component_refs.data() + etype.components_ref_first;
 		return{ begin, begin + etype.components_count };
 	}
 };
@@ -99,8 +97,16 @@ Context::~Context()
 
 void Context::setup()
 {
+	// Temporary array that holds the number of ranges pushed per component (index).
+	std::vector<uint32_t> component_range_end;
+	component_range_end.resize(m_components.size(), 0U);
+
 	for (auto& component : m_components)
 	{
+		// Reserve required ranges from the array and resolve the 'first' index.
+		component.ranges_first = m_component_ranges.size();
+		m_component_ranges.resize(m_component_ranges.size() + component.ranges_count);
+
 		// Allocate initial component instances memory.
 		component.array_capacity = 16;
 		component.array = (char*)malloc(component.array_capacity * component.instance_size);
@@ -112,28 +118,35 @@ void Context::setup()
 
 	for (auto& entity_type : m_entity_types)
 	{
-		for (auto& component_range : Private::get_component_ranges(*this, entity_type))
+		for (auto& component_ref : Private::get_component_refs(*this, entity_type))
 		{
 			// Resolve component index from component id.
-			component_range.component_index = find_component(component_range.component_id) - m_components.data();
+			component_ref.component_index = find_component(component_ref.component_id) - m_components.data();
+
+			// Setup the appropriate component range with this entity type index.
+			component_ref.component_range_global_index = m_components[component_ref.component_index].ranges_first + component_range_end[component_ref.component_index]++;
 
 			// Set range entity type index to this entity type index.
-			component_range.entity_type_index = &entity_type - m_entity_types.data();
+			m_component_ranges[component_ref.component_range_global_index].entity_type_index = (uint16_t)(&entity_type - m_entity_types.data());
+
+#ifdef _DEBUG
+			m_component_ranges[component_ref.component_range_global_index].component_index = component_ref.component_index;
+#endif
 		}
 	}
 }
 
-Entity Context::create(Entity_type_id type_id)
+Entity Context::create(Type type_id)
 {
+	assert(is_setup());
 	auto& entity_type = m_entity_types[type_id];
 
 	// Generate a new local index for the new entity.
 	uint32_t logical_index;
 
-	// #todo
+	// Try reusing some free index.
 	if (!entity_type.free_indices.empty())
 	{
-		// #todo
 		logical_index = entity_type.free_indices.front();
 		entity_type.free_indices.pop_front();
 	}
@@ -141,21 +154,27 @@ Entity Context::create(Entity_type_id type_id)
 	{
 		// No reusable indices. Create a new logical index and map it to the component index.
 		logical_index = entity_type.alive_count;
-		for (auto& component_range : Private::get_component_ranges(*this, entity_type))
+		for (auto& component_ref : Private::get_component_refs(*this, entity_type))
 		{
-			component_range.logical_to_physical.emplace_back();
+			m_component_ranges[component_ref.component_range_global_index].logical_to_physical.emplace_back();
 		}
 		entity_type.generation.push_back(0);
 	}
 
-	for (auto& component_range : Private::get_component_ranges(*this, entity_type))
+	for (auto& component_ref : Private::get_component_refs(*this, entity_type))
 	{
-		auto& component = m_components[component_range.component_index];
+		auto& component = m_components[component_ref.component_index];
+		auto& range = m_component_ranges[component_ref.component_range_global_index];
 
-		Private::component_push_back(*this, component, &component_range - m_component_ranges.data());
+		void* ptr = Private::component_push_back(*this, component, component_ref.component_range_global_index);
 
-		uint32_t physical_index = component_range.first_physical_index + entity_type.alive_count;
-		component_range.logical_to_physical[logical_index] = physical_index;
+		// Invoke component type default constructor.
+		component.construct(ptr);
+
+		// Update bookkeeping so that both the physical index of this component index and the entity
+		// logical index within this component range map to each other.
+		uint32_t physical_index = range.first_physical_index + entity_type.alive_count;
+		range.logical_to_physical[logical_index] = physical_index;
 		component.physical_to_logical[physical_index] = logical_index;
 	}
 
@@ -172,6 +191,7 @@ void Context::destroy(Entity entity)
 	// of indirection between entity index and component index we effectively make deletion not
 	// terribly expensive as we don't need to update all existing entities but only one.
 
+	assert(is_setup());
 	assert(is_alive(entity));
 	auto& entity_type = m_entity_types[entity.type];
 	
@@ -183,35 +203,38 @@ void Context::destroy(Entity entity)
 	--entity_type.alive_count;
 
 	// Move the last entity in the range in the position of the deleted component.
-	for (auto& component_range : Private::get_component_ranges(*this, entity_type))
+	for (auto& component_ref : Private::get_component_refs(*this, entity_type))
 	{
-		auto& component = m_components[component_range.component_index];
+		auto& component = m_components[component_ref.component_index];
+		auto& range = m_component_ranges[component_ref.component_range_global_index];
 
-		const uint32_t destroyed_physical_index = component_range.logical_to_physical[entity.index];
-		const uint32_t back_physical_index = component_range.first_physical_index + entity_type.alive_count;
+		const uint32_t destroyed_physical_index = range.logical_to_physical[entity.index];
+		const uint32_t back_physical_index = range.first_physical_index + entity_type.alive_count;
 
 		char* destroyed_instance_ptr = component.array + destroyed_physical_index * component.instance_size;
 		char* back_instance_ptr = component.array + back_physical_index * component.instance_size;
 
 		memcpy(destroyed_instance_ptr, back_instance_ptr, component.instance_size);
 
-		// #todo
+		// Adjust the bookeeping physical to logical mapping.
 		uint32_t back_logical_index = component.physical_to_logical[back_physical_index];
 		component.physical_to_logical[destroyed_physical_index] = back_logical_index;
-		component_range.logical_to_physical[back_logical_index] = destroyed_physical_index;
+		range.logical_to_physical[back_logical_index] = destroyed_physical_index;
 	}
 }
 
 void Context::clear()
 {
+	assert(is_setup());
+
 	// Reset all entity lists.
 	for (auto& entity_type : m_entity_types)
 	{
 #ifdef _DEBUG
-		for (auto& component_range : Private::get_component_ranges(*this, entity_type))
+		for (auto& component_ref : Private::get_component_refs(*this, entity_type))
 		{
-			auto& component = m_components[component_range.component_index];
-			assert(component_range.logical_to_physical.size() == entity_type.generation.size());
+			auto& range = m_component_ranges[component_ref.component_range_global_index];
+			assert(range.logical_to_physical.size() == entity_type.generation.size());
 		}
 #endif
 
@@ -229,6 +252,7 @@ void Context::clear()
 
 bool Context::is_alive(Entity entity) const
 {
+	assert(is_setup());
 	return	entity.type < m_entity_types.size() &&
 			m_entity_types[entity.type].generation[entity.index] == entity.generation;
 }
@@ -253,11 +277,11 @@ Context::Entity_type* Context::find_create_entity_type(range<uintptr_t*> compone
 		if (component_ids.size() != entity_type.components_count)
 			continue;
 
-		auto components_ranges = Private::get_component_ranges(*this, entity_type);
+		auto components_ref_range = Private::get_component_refs(*this, entity_type);
 
 		uint32_t i = 0;
 		for (; i < component_ids.size(); ++i)
-			if (component_ids.begin()[i] != components_ranges.begin()[i].component_id)
+			if (component_ids.begin()[i] != components_ref_range.begin()[i].component_id)
 				break;
 
 		if (i == component_ids.size())
@@ -265,15 +289,15 @@ Context::Entity_type* Context::find_create_entity_type(range<uintptr_t*> compone
 	}
 
 	// Entity type not found, create one.
-	auto component_range_first = m_component_ranges.size();
+	auto components_ref_first = m_component_refs.size();
 		
 	for (auto component_id : component_ids)
 	{
-		m_component_ranges.push_back({ component_id, 0, (uint16_t)m_entity_types.size() });
+		m_component_refs.push_back({ component_id });
 		++find_component(component_id)->ranges_count;
 	}
 
-	m_entity_types.push_back({ component_range_first, m_component_ranges.size() - component_range_first });
+	m_entity_types.push_back({ components_ref_first, m_component_refs.size() - components_ref_first });
 	
 	return &m_entity_types.back();
 }
@@ -283,19 +307,20 @@ void* Context::get_component_instance(Entity entity, uint32_t component_id)
 	assert(is_alive(entity));
 
 	auto& entity_type = m_entity_types[entity.type];
-	auto components_ranges = Private::get_component_ranges(*this, entity_type);
+	auto components_ref_range = Private::get_component_refs(*this, entity_type);
 	
-	auto it = std::lower_bound(components_ranges.begin(), components_ranges.end(), component_id, [](Component_range const& range, uint32_t component_id)
+	auto it = std::lower_bound(components_ref_range.begin(), components_ref_range.end(), component_id, [](Component_ref const& ref, uint32_t component_id)
 	{
-		return range.component_id < component_id;
+		return ref.component_id < component_id;
 	});
 
-	if (it < components_ranges.end() && it->component_id == component_id)
+	if (it < components_ref_range.end() && it->component_id == component_id)
 	{
 		auto& component = m_components[it->component_index];
+		auto& range = m_component_ranges[it->component_range_global_index];
 		
 		// Get the physical index of the entity component instance within the component range.
-		const uint32_t physical_index = it->logical_to_physical[entity.index];
+		const uint32_t physical_index = range.logical_to_physical[entity.index];
 
 		return component.array + physical_index * component.instance_size;
 	}
@@ -337,7 +362,7 @@ uint32_t Context::define_foreach(std::initializer_list<uint32_t> component_ids)
 		{
 			for (uint32_t j = 0; j < entity_type.components_count; ++j)
 			{
-				if (component_ids.begin()[i] == m_component_ranges[entity_type.components_range_first + j].component_id)
+				if (component_ids.begin()[i] == m_component_refs[entity_type.components_ref_first + j].component_id)
 				{
 					// Component found in entity type, carry one with the next component in foreach's
 					// component list.
@@ -358,7 +383,7 @@ uint32_t Context::define_foreach(std::initializer_list<uint32_t> component_ids)
 		// If all components have been mached, create the foreach statements otherwise undo any
 		// change made.
 		if (num_components == component_ref_index_count)
-			m_foreach_stmts.push_back({ (Entity_type_id)(&entity_type - m_entity_types.data()), component_ref_index_first, component_ref_index_count });
+			m_foreach_stmts.push_back({ (Type)(&entity_type - m_entity_types.data()), component_ref_index_first, component_ref_index_count });
 		else
 			m_ids.resize(component_ref_index_first);
 	}
@@ -368,4 +393,4 @@ uint32_t Context::define_foreach(std::initializer_list<uint32_t> component_ids)
 	return m_foreaches.size() - 1;
 }
 
-} // entity
+} // namespace entity

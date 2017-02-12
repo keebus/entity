@@ -21,9 +21,9 @@ int main()
 {
 	entity::Context context;
 
-	entity::Entity_type_id entity_position = context.define<Position>();
-	entity::Entity_type_id entity_position_velocity = context.define<Position, Velocity>();
-	entity::Entity_type_id entity_velocity = context.define<Velocity>();
+	entity::Type entity_position = context.define<Position>();
+	entity::Type entity_position_velocity = context.define<Position, Velocity>();
+	entity::Type entity_velocity = context.define<Velocity>();
 
 	assert((context.define<Velocity>() == entity_velocity));
 	assert((context.define<Position>() == entity_position));
@@ -43,28 +43,27 @@ int main()
 	for (int i = 0; i < 88; ++i)
 	{
 		auto p = context.create( entity_position);
-		*context.get<Position>(p) = { i, i * 10 + 2 };
+		context.get<Position>(p) = { i, i * 10 + 2 };
 	}
 
-	foreach_position(context, [&](Position& p)
+	context.foreach(foreach_position, [&](Position& p)
 	{
 		assert(p.y == p.x * 10 + 2);
 	});
 
-	foreach_position(context, [&](entity::Foreach_control& control, Position& p)
+	context.foreach_control(foreach_position, [&](auto& control, Position& p)
 	{
 		assert(p.y == p.x * 10 + 2);
-		context.destroy(control.entity());
-		control.set_flag(entity::Foreach_control::Entity_removed);
+		control.destroy_entity();
 	});
 	
 	for (int i = 0; i < 88; ++i)
 	{
 		auto p = context.create(entity_position);
-		*context.get<Position>(p) = { i, i * 10 + 2 };
+		context.get<Position>(p) = { i, i * 10 + 2 };
 	}
 
-	foreach_position(context, [&](Position& p)
+	context.foreach(foreach_position, [&](Position& p)
 	{
 		assert(p.y == p.x * 10 + 2);
 	});
@@ -82,20 +81,18 @@ int main()
 				case 0: es.push_back(context.create(entity_position)); goto set_position;
 				case 1:
 					es.push_back(context.create(entity_position_velocity));
-					*context.get<Velocity>(es.back()) = { (int)es.size(), (int)es.size() * 2};
+					context.get<Velocity>(es.back()) = { (int)es.size(), (int)es.size() * 2};
 					goto set_position;
 
 				case 2:
 					es.push_back(context.create(entity_velocity));
-					*context.get<Velocity>(es.back()) = { (int)es.size(), (int)es.size() * 2};
+					context.get<Velocity>(es.back()) = { (int)es.size(), (int)es.size() * 2};
 					break;
 
 				set_position:
 				{
 					int r = rand() % 1234;
-					auto p = context.get<Position>(es.back());
-					*p = { r, r * 10 + 2 };
-					r = 0;
+					context.get<Position>(es.back()) = { r, r * 10 + 2 };
 					break;
 				}
 				
@@ -103,7 +100,7 @@ int main()
 			assert(context.is_alive(es.back()));
 		}
 
-		foreach_position(context, [&](Position& p)
+		context.foreach(foreach_position, [&](Position& p)
 		{
 			assert(p.y == p.x * 10 + 2);
 		});
@@ -115,19 +112,19 @@ int main()
 			assert(!context.is_alive(es[j]));
 		}
 
-		foreach_position(context, [&](Position& p)
+		context.foreach(foreach_position, [&](Position& p)
 		{
 			p.x = rand() % 12345;
 			p.y = p.x * 10 + 2;
 		});
 
-		foreach_velocity(context, [&](Velocity& v)
+		context.foreach(foreach_velocity, [&](Velocity& v)
 		{
 			v.x =  rand() % 12345;
 			v.y = v.x * 123;
 		});
 
-		foreach_velocity_position(context, [&](Velocity& v, Position& p)
+		context.foreach(foreach_velocity_position, [&](Velocity& v, Position& p)
 		{
 			assert(p.y == p.x * 10 + 2);
 			assert(v.y == v.x * 123);
